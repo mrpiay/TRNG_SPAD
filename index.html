@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="description" content="Simulación y visualización de un TRNG basado en SPAD">
+        <meta name="keywords" content="TRNG, SPAD">
+        <meta name="author" content="Javier Piay">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>TRNG_SPAD_1</title> 
+        <link rel="stylesheet" href="style.css">
+    </head>
+<body>
+
+<script type= "text/javascript">
+
+document.body.innerHTML =
+`
+<pre>
+[Título]
+Generación de números aleatorios basada en la
+digitalización de los intervalos de muestreo donde
+se detecta la aparición de los pulsos de avalancha
+originados en un SPAD en condiciones de oscuridad.
+
+[Datos]
+- tasa: 1 pulso por unidad arbitraria de tiempo
+	
+[Variables]
+- res: intervalos por unidad de tiempo (resolución temporal)
+- bins: número de intervalos por ventana de muestreo
+
+[Funcionamiento]
+- Introducir los valores de "res" y "bins".
+- Pulsar 'Generar' para ver los resultados de forma instantánea.
+- Pulsar 'Animar/Detener' para ver los resultados de forma progresiva.
+
+</pre>
+<div>
+	res:<input type="text" id="inp_res" value=10000>
+</div><br>
+<div>
+	bins:<input type="text" id="inp_bins" value=16>
+</div><br>
+<button id="btn_seq" type="button">
+	Generar
+</button>
+<button id="btn_ani" type="button">
+	Animar
+</button>
+<br>
+<p style="background-color:lightgrey;font-weight:bold;">
+	1. Distribución de pulsos por unidad de tiempo
+</p>
+<p>
+	- Tasa promedio: <span id="txt_tasa"></span>
+</p>
+<canvas id="can_ut"></canvas>
+<br>
+<p style="background-color:lightgrey;font-weight:bold;">
+	2. Distribución de pulsos en intervalos de muestreo
+</p>
+<p>
+	- Fracción de pulsos múltiples sin codificar: <span id="txt_mult"></span>
+</p>
+<canvas id="can_bins"></canvas>
+<br>
+<p id="txt_bins">
+	[ ]
+</p>
+<p style="background-color:lightgrey;font-weight:bold;">
+	3. Digitalización de la aleatoriedad
+</p>
+<p>
+	Porcentaje de '0': <span id="txt_por0"></span>
+</p>
+<canvas id="can_seq"></canvas>
+<br>
+<br>
+<div id="div_seq" style="background-color:black;color:white"></div>
+`
+//<div id="div_seq" style="font-family:courier;font-size:16px;background-color:black;color:white"></div>
+
+const txt_tasa = document.getElementById("txt_tasa");
+const can_ut = document.getElementById("can_ut");
+const ctx_ut = can_ut.getContext("2d")
+const txt_mult = document.getElementById("txt_mult");
+const can_bins = document.getElementById("can_bins");
+const ctx_bins = can_bins.getContext("2d")
+const txt_bins = document.getElementById("txt_bins");
+const btn_seq = document.getElementById("btn_seq");
+const btn_ani = document.getElementById("btn_ani");
+const txt_por0 = document.getElementById("txt_por0");
+const can_seq = document.getElementById("can_seq");
+const ctx_seq = can_seq.getContext("2d")
+const div_seq = document.getElementById("div_seq");
+
+let res = document.getElementById("inp_res").value;
+let bins = document.getElementById("inp_bins").value;
+let digits = Math.ceil(Math.log2(bins));
+	
+const FPS = 50;
+const tasa = 1;
+const rows = 512 * 1;
+const cols = 512;
+const bitsize = 1;
+
+let aniID, stopped,lastTimestamp;
+let tp, put, ptot, ut, v_prev, mult; 
+let pbins = [];
+let nceros, nunos;
+let randbits, txtseq;
+	
+can_ut.width = 0.9 * window.innerWidth;
+can_ut.height = 0.15 * window.innerHeight;
+can_bins.width = 0.9 * window.innerWidth;
+can_bins.height = 0.2 * window.innerHeight;
+can_seq.width = bitsize * cols;
+can_seq.height = bitsize * rows;
+
+function ut_lin(){
+	ctx_ut.clearRect(0, 0, can_ut.width, can_ut.height);
+	ctx_ut.fillRect(0, can_ut.height, can_ut.width, -3);
+}
+
+function bins_lin(){
+	ctx_bins.clearRect(0, 0, can_bins.width, can_bins.height);
+  	ctx_bins.fillRect(0, can_bins.height, can_bins.width, -3);
+}
+
+function poiss(){
+	let v, bin, maxbin; 
+	let u = Math.random();
+  	let dt = -Math.log(1.0 - u) / tasa;
+	dt = dt * res;
+  	tp = tp + dt;
+	if(tp < res){
+		put = put + 1;
+    		ptot = ptot + 1;
+    		ctx_ut.fillRect(tp * can_ut.width / res, 0, 1, can_ut.height);
+  		v = Math.floor(tp / bins);
+  		bin = Math.floor(tp) % bins;
+ 		bins_lin();
+		pbins[bin]++;
+		maxbin = Math.max(...pbins);
+		txt_bins.innerHTML = "[" + pbins + "]";
+		if(v != v_prev){
+			v_prev = v;
+			drawseq(dec2bin(bin, digits));
+  		}
+  		else{
+  			mult = mult + 1;
+  		}
+		txt_mult.innerHTML = mult + "/" + ptot + ' (' + Math.round(10000 * mult / ptot) / 100 + ' %)';
+		for(let i = 0; i < bins; i++){
+			ctx_bins.fillRect(2 + i * can_bins.width / bins, can_bins.height, can_bins.width / bins - 4, -can_bins.height * pbins[i] / maxbin);
+		}
+	}
+	else{
+		txt_tasa.innerHTML = Math.round(10 * put) / 10;
+		ut = ut + 1
+		put = 0;
+    		tp = 0;
+ 		ut_lin();
+		v_prev = -1;
+	}
+}
+
+function ani_poiss(timestamp) {
+  aniID = requestAnimationFrame(ani_poiss);
+  if (timestamp - lastTimestamp < 1000 / FPS) 
+	  return;
+  poiss();
+  lastTimestamp = timestamp;
+}
+
+function ani_start(){
+	btn_ani.innerHTML = "Detener";
+	restart();
+  	stopped = false;
+	ani_poiss();
+}
+
+function ani_stop(){
+	if (aniID)
+		window.cancelAnimationFrame(aniID);
+  	stopped = true;
+	ut_lin();
+	btn_ani.innerHTML = "Animar";
+  	txt_tasa.innerHTML = Math.round(100 * ptot / ut) / 100;
+}
+
+function btn_seq_click(){
+	restart();
+	while(randbits <= rows * cols){
+		poiss();
+	}
+	ani_stop();
+}
+
+function btn_ani_click(){
+	if(stopped == true)
+  		ani_start();
+  	else
+  		ani_stop();
+}
+
+function drawseq(binseq){
+	const binarr = binseq.split('');
+	for(let i = 0; i < binarr.length; i++){
+		const bw = binarr[i] == 0 ? "black" : "white";
+		ctx_seq.fillStyle = bw;
+		ctx_seq.fillRect(bitsize * (randbits % cols), bitsize * Math.floor(randbits / cols), bitsize, bitsize); 
+		randbits = randbits + 1;
+		txt_por0.innerHTML = Math.round(10000 * (nceros/(nceros + nunos))) / 100 + ' %';
+		txtseq += binarr[i] + ' ';
+		if(randbits % 8 == 0){
+			//area_seq.innerHTML = txtseq + '\r\n' + area_seq.innerHTML;
+			div_seq.insertAdjacentHTML("afterbegin", '<span>' + txtseq + '</span><br>');
+      			txtseq = '';
+		}
+	}
+}
+
+function dec2bin(dec, nbits){
+	let digit, bits;
+	if(dec == 0){
+	  	bits = '0';
+   		nceros = nceros + 1;
+	}
+	else
+		bits = '';
+	while(dec > 0){
+  		digit = (dec % 2).toString();
+    		if(digit == '0')
+    			nceros = nceros + 1;
+    		else
+			nunos = nunos + 1;
+    		bits = digit + bits; 
+    		dec = Math.floor(dec / 2);
+	}
+	let pad = nbits - bits.length;
+  	if(pad > 0){
+  		for(let i = 0; i < pad; i++){
+    			bits = '0' + bits;
+      			nceros = nceros + 1;
+		}
+	}
+	return bits;
+}
+
+function restart(){
+	res = document.getElementById("inp_res").value;
+	bins = document.getElementById("inp_bins").value;
+	digits = Math.ceil(Math.log2(bins));
+	pbins = [];
+	for(let i = 0; i < bins; i++)
+		pbins[i] = 0;
+	ut = 0;
+	v_prev = -1;
+	tp = 0;
+	put = 0;
+	ptot = 0;
+  	mult = 0;
+	ut_lin();
+	bins_lin();
+	stopped = true;
+	lastTimestamp = 0;
+	nceros = 0;
+	nunos = 0;
+	randbits = 0;
+	ctx_seq.fillStyle = "lightgray";
+	ctx_seq.fillRect(0, 0, can_seq.width, can_seq.height);
+	txtseq = '';
+	div_seq.innerHTML = '';
+}
+
+btn_seq.addEventListener("click", btn_seq_click, false);
+btn_ani.addEventListener("click", btn_ani_click, false);
+restart();
+            
+</script>
+
+</body>
+</html>
